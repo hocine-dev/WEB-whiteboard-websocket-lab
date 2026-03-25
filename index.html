@@ -5,18 +5,72 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="manifest" href="/manifest.json">
     <link rel="shortcut icon" href="/favicon.ico">
-    <title>Simple Chat App</title>
+    <title>WhiteBoard Lab</title>
   </head>
   <body>
     <noscript>
       You need to enable JavaScript to run this app.
     </noscript>
-    <div id="root"></div>
-    <header><p>???</p></header>
-    <ul id="messages"></ul>
-    <form action="">
-    &#10093; <input autofocus autocomplete="off" placeholder="Send a message"/>
-    </form>
+
+    <div id="lobby">
+
+      <header>
+        <p>Connecté en tant que : <strong id="user-name">???</strong></p>
+      </header>
+
+      <main>
+
+        <!-- Créer un nouveau canvas -->
+        <section>
+          <h2>Créer un canvas</h2>
+          <input id="new-room-name" type="text" placeholder="Nom du canvas…" />
+          <button id="new-room-btn">Créer</button>
+        </section>
+
+        <!-- Liste des canvas existants -->
+        <section>
+          <h2>Canvas existants</h2>
+          <ul id="room-list">
+
+          </ul>
+        </section>
+
+      </main>
+    </div>
+
+
+    <div id="canvas-screen" class="hidden">
+
+      <header>
+        <button id="leave-btn">← Retour</button>
+        <p id="room-title">Canvas</p>
+        <p>Connecté en tant que : <strong id="canvas-user-name">???</strong></p>
+      </header>
+
+      <main>
+
+        <!-- Zone de dessin -->
+        <canvas id="whiteboard"></canvas>
+
+        <!-- Barre d'outils -->
+        <div id="toolbar">
+          <button id="tool-pen">Stylo</button>
+          <button id="tool-eraser">Gomme</button>
+          <label>
+            Taille :
+            <input id="brush-size" type="range" min="1" max="40" value="4" />
+          </label>
+          <button id="btn-clear">Effacer tout</button>
+          <button id="btn-save">Sauvegarder</button>
+        </div>
+
+
+
+      </main>
+
+    </div>
+
     <script type="module" src="/src/index.ts"></script>
   </body>
 </html>
+

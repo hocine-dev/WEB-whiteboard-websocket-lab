@@ -42,7 +42,7 @@ ws.onmessage = (event: MessageEvent) => {
 function sendMessage(event: Event): void {
   event.preventDefault();
   event.stopPropagation();
-  
+
   const sendInput = document.querySelector('form input') as HTMLInputElement;
   if (sendInput.value.trim() !== '') {
     // Envoyer le message via WebSocket
