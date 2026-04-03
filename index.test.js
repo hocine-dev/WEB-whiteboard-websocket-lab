@@ -381,3 +381,100 @@ test('feat2 - la couleur utilisateur est stable pour un nom donne et differente 
     aliceB.close();
   }
 });
+
+test('feat3 - appliquer un etat historique diffuse drawing:state avec updatedBy', async () => {
+  const alice = await createClient('alice-history');
+  const bob = await createClient('bob-history');
+
+  try {
+    await consumeHandshakeMessages(alice);
+    await consumeHandshakeMessages(bob);
+
+    const roomName = `feat3-history-${Date.now()}`;
+    const roomCreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomName });
+
+    const roomListMsg = await roomCreated;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room, 'La salle du test historique doit exister');
+
+    const aliceJoinedPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const aliceStatePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: room.id });
+    await aliceJoinedPromise;
+    await aliceStatePromise;
+
+    const bobJoinedPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const bobStatePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(bob, { type: 'room:join', roomId: room.id });
+    await bobJoinedPromise;
+    await bobStatePromise;
+
+    const validStroke = {
+      from: 'alice-history',
+      color: 'hsl(10, 70%, 50%)',
+      tool: 'pen',
+      size: 4,
+      strokeId: `history-valid-${Date.now()}`,
+      x1: 0.1,
+      y1: 0.1,
+      x2: 0.2,
+      y2: 0.2
+    };
+
+    const invalidStroke = {
+      from: 'alice-history',
+      color: 'hsl(10, 70%, 50%)',
+      tool: 'pen',
+      size: 4,
+      strokeId: `history-invalid-${Date.now()}`,
+      x1: 2,
+      y1: 2,
+      x2: 3,
+      y2: 3
+    };
+
+    const aliceUpdatedStatePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id && msg.updatedBy === 'bob-history'
+    );
+    const bobUpdatedStatePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id && msg.updatedBy === 'bob-history'
+    );
+
+    sendJson(bob, {
+      type: 'drawing:applyState',
+      strokes: [validStroke, invalidStroke]
+    });
+
+    const aliceUpdatedState = await aliceUpdatedStatePromise;
+    const bobUpdatedState = await bobUpdatedStatePromise;
+
+    assert.equal(aliceUpdatedState.strokes.length, 1);
+    assert.equal(aliceUpdatedState.strokes[0].strokeId, validStroke.strokeId);
+    assert.equal(aliceUpdatedState.updatedBy, 'bob-history');
+
+    assert.equal(bobUpdatedState.strokes.length, 1);
+    assert.equal(bobUpdatedState.strokes[0].strokeId, validStroke.strokeId);
+    assert.equal(bobUpdatedState.updatedBy, 'bob-history');
+  } finally {
+    alice.close();
+    bob.close();
+  }
+});
