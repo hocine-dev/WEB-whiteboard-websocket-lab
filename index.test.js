@@ -478,3 +478,86 @@ test('feat3 - appliquer un etat historique diffuse drawing:state avec updatedBy'
     bob.close();
   }
 });
+
+test('feat4 - users:list est diffuse avec couleurs et mis a jour au depart', async () => {
+  const alice = await createClient('alice-users');
+  const bob = await createClient('bob-users');
+
+  try {
+    await consumeHandshakeMessages(alice);
+    await consumeHandshakeMessages(bob);
+
+    const roomName = `feat4-users-${Date.now()}`;
+    const roomCreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomName });
+
+    const roomListMsg = await roomCreated;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room, 'La salle du test users:list doit exister');
+
+    const aliceJoinedPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const aliceStatePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: room.id });
+    await aliceJoinedPromise;
+    await aliceStatePromise;
+
+    const aliceUsersWithTwoPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'users:list'
+        && msg.roomId === room.id
+        && Array.isArray(msg.users)
+        && msg.users.some((u) => u.name === 'alice-users')
+        && msg.users.some((u) => u.name === 'bob-users')
+    );
+
+    const bobJoinedPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const bobStatePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+
+    sendJson(bob, { type: 'room:join', roomId: room.id });
+    await bobJoinedPromise;
+    await bobStatePromise;
+
+    const usersWithTwo = await aliceUsersWithTwoPromise;
+    const aliceEntry = usersWithTwo.users.find((u) => u.name === 'alice-users');
+    const bobEntry = usersWithTwo.users.find((u) => u.name === 'bob-users');
+
+    assert.ok(aliceEntry, 'alice doit etre dans users:list');
+    assert.ok(bobEntry, 'bob doit etre dans users:list');
+    assert.ok(/^hsl\(/.test(aliceEntry.color), 'La couleur alice doit etre un hsl');
+    assert.ok(/^hsl\(/.test(bobEntry.color), 'La couleur bob doit etre un hsl');
+    assert.notEqual(aliceEntry.color, bobEntry.color, 'Deux noms differents -> couleurs differentes');
+
+    const aliceUsersAfterLeavePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'users:list'
+        && msg.roomId === room.id
+        && Array.isArray(msg.users)
+        && msg.users.length === 1
+        && msg.users[0].name === 'alice-users'
+    );
+
+    sendJson(bob, { type: 'room:leave' });
+
+    const usersAfterLeave = await aliceUsersAfterLeavePromise;
+    assert.equal(usersAfterLeave.users.length, 1);
+    assert.equal(usersAfterLeave.users[0].name, 'alice-users');
+  } finally {
+    alice.close();
+    bob.close();
+  }
+});
