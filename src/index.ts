@@ -38,7 +38,7 @@ type ServerMessage =
   | { type: 'room:joined'; room: { id: string; name: string }; user: { name: string; color: string } }
   | { type: 'room:error'; message: string }
   | { type: 'chat:message'; roomId: string; from: string; text: string; sentAt: number }
-  | { type: 'drawing:state'; roomId: string; strokes: DrawStroke[] }
+  | { type: 'drawing:state'; roomId: string; strokes: DrawStroke[]; updatedBy?: string }
   | { type: 'drawing:stroke'; roomId: string; stroke: DrawStroke }
   | { type: 'drawing:clear'; roomId: string; by: string };
 
@@ -48,9 +48,14 @@ let brushSize = 4;
 let currentUserColor = '#4ec9ff';
 let isDrawing = false;
 let lastPoint: { x: number; y: number } | null = null;
+let currentStrokeId: string | null = null;
 let roomStrokes: DrawStroke[] = [];
 let localStrokeCounter = 0;
 const pendingStrokeEchoes = new Set<string>();
+let isHistoryMode = false;
+let historySnapshot: DrawStroke[] = [];
+let historySteps: DrawStroke[][] = [];
+let historyCursor = 0;
 
 const userName = wsname || 'Anonymous';
 
@@ -83,6 +88,12 @@ const toolEraserButton = document.querySelector('#tool-eraser') as HTMLButtonEle
 const brushSizeInput = document.querySelector('#brush-size') as HTMLInputElement | null;
 const clearButton = document.querySelector('#btn-clear') as HTMLButtonElement | null;
 const saveButton = document.querySelector('#btn-save') as HTMLButtonElement | null;
+const historyButton = document.querySelector('#btn-history') as HTMLButtonElement | null;
+const historyBackButton = document.querySelector('#btn-history-back') as HTMLButtonElement | null;
+const historyForwardButton = document.querySelector('#btn-history-forward') as HTMLButtonElement | null;
+const historyApplyButton = document.querySelector('#btn-history-apply') as HTMLButtonElement | null;
+const historyExitButton = document.querySelector('#btn-history-exit') as HTMLButtonElement | null;
+const historyStep = document.querySelector('#history-step') as HTMLSpanElement | null;
 
 const context = canvas ? canvas.getContext('2d') : null;
 const ws = new WebSocket('ws://localhost:1234');
@@ -197,8 +208,95 @@ function pushLocalStroke(stroke: DrawStroke): void {
   drawStroke(stroke);
 }
 
+function drawHistoryPreview(): void {
+  if (!context || !canvas) {
+    return;
+  }
+
+  clearCanvasVisual();
+  for (let stepIndex = 0; stepIndex < historyCursor; stepIndex += 1) {
+    const step = historySteps[stepIndex];
+    for (const stroke of step) {
+      drawStroke(stroke);
+    }
+  }
+}
+
+function buildHistorySteps(strokes: DrawStroke[]): DrawStroke[][] {
+  const steps: DrawStroke[][] = [];
+  let currentKey = '';
+
+  for (let i = 0; i < strokes.length; i += 1) {
+    const stroke = strokes[i];
+    const key = stroke.strokeId || `segment-${i}`;
+
+    if (steps.length === 0 || key !== currentKey) {
+      steps.push([stroke]);
+      currentKey = key;
+    } else {
+      steps[steps.length - 1].push(stroke);
+    }
+  }
+
+  return steps;
+}
+
+function updateHistoryControls(): void {
+  if (historyBackButton) {
+    historyBackButton.disabled = historyCursor <= 0;
+  }
+  if (historyForwardButton) {
+    historyForwardButton.disabled = historyCursor >= historySteps.length;
+  }
+  if (historyStep) {
+    historyStep.textContent = `${historyCursor} / ${historySteps.length}`;
+  }
+}
+
+function setHistoryControlsVisible(visible: boolean): void {
+  const controls = [historyBackButton, historyForwardButton, historyApplyButton, historyExitButton, historyStep];
+  controls.forEach((element) => {
+    if (element) {
+      element.classList.toggle('hidden', !visible);
+    }
+  });
+
+  if (historyButton) {
+    historyButton.disabled = visible;
+  }
+}
+
+function enterHistoryMode(): void {
+  if (isHistoryMode || !currentRoomId) {
+    return;
+  }
+
+  isHistoryMode = true;
+  historySnapshot = roomStrokes.map((stroke) => ({ ...stroke }));
+  historySteps = buildHistorySteps(historySnapshot);
+  historyCursor = historySteps.length;
+  setHistoryControlsVisible(true);
+  updateHistoryControls();
+  drawHistoryPreview();
+}
+
+function exitHistoryMode(skipRedraw = false): void {
+  if (!isHistoryMode) {
+    return;
+  }
+
+  isHistoryMode = false;
+  historySnapshot = [];
+  historySteps = [];
+  historyCursor = 0;
+  setHistoryControlsVisible(false);
+  if (!skipRedraw) {
+    redrawCanvas();
+  }
+}
+
 function beginDraw(event: PointerEvent): void {
-  if (!canvas || !currentRoomId) {
+  if (!canvas || !currentRoomId || isHistoryMode) {
     return;
   }
 
@@ -210,6 +308,7 @@ function beginDraw(event: PointerEvent): void {
   canvas.setPointerCapture(event.pointerId);
   isDrawing = true;
   lastPoint = point;
+  currentStrokeId = `${Date.now()}-${localStrokeCounter++}`;
 }
 
 function moveDraw(event: PointerEvent): void {
@@ -227,7 +326,7 @@ function moveDraw(event: PointerEvent): void {
     color: currentUserColor,
     tool: currentTool,
     size: brushSize,
-    strokeId: `${Date.now()}-${localStrokeCounter++}`,
+    strokeId: currentStrokeId || `${Date.now()}-${localStrokeCounter++}`,
     x1: lastPoint.x,
     y1: lastPoint.y,
     x2: point.x,
@@ -265,11 +364,18 @@ function endDraw(event: PointerEvent): void {
 
   isDrawing = false;
   lastPoint = null;
+  currentStrokeId = null;
 }
 
 function resetCanvasStateForRoom(): void {
   roomStrokes = [];
   pendingStrokeEchoes.clear();
+  if (isHistoryMode) {
+    historySnapshot = [];
+    historySteps = [];
+    historyCursor = 0;
+    updateHistoryControls();
+  }
   redrawCanvas();
 }
 
@@ -301,6 +407,7 @@ function showLobby(): void {
   currentRoomId = null;
   isDrawing = false;
   lastPoint = null;
+  exitHistoryMode();
 }
 
 function showCanvas(roomId: string, roomName: string): void {
@@ -399,7 +506,9 @@ ws.onmessage = (event: MessageEvent) => {
       }
 
       roomStrokes = Array.isArray(data.strokes) ? data.strokes : [];
-      redrawCanvas();
+        if (!isHistoryMode) {
+          redrawCanvas();
+        }
       return;
     }
 
@@ -414,7 +523,10 @@ ws.onmessage = (event: MessageEvent) => {
         return;
       }
 
-      pushLocalStroke(stroke);
+      roomStrokes.push(stroke);
+      if (!isHistoryMode) {
+        drawStroke(stroke);
+      }
       return;
     }
 
@@ -473,7 +585,7 @@ if (brushSizeInput) {
 
 if (clearButton) {
   clearButton.addEventListener('click', () => {
-    if (!currentRoomId) {
+    if (!currentRoomId || isHistoryMode) {
       return;
     }
 
@@ -491,6 +603,62 @@ if (saveButton && canvas) {
     link.href = canvas.toDataURL('image/png');
     link.download = `canvas-${Date.now()}.png`;
     link.click();
+  });
+}
+
+if (historyButton) {
+  historyButton.addEventListener('click', () => {
+    enterHistoryMode();
+  });
+}
+
+if (historyBackButton) {
+  historyBackButton.addEventListener('click', () => {
+    if (!isHistoryMode || historyCursor <= 0) {
+      return;
+    }
+
+    historyCursor -= 1;
+    updateHistoryControls();
+    drawHistoryPreview();
+  });
+}
+
+if (historyForwardButton) {
+  historyForwardButton.addEventListener('click', () => {
+    if (!isHistoryMode || historyCursor >= historySteps.length) {
+      return;
+    }
+
+    historyCursor += 1;
+    updateHistoryControls();
+    drawHistoryPreview();
+  });
+}
+
+if (historyApplyButton) {
+  historyApplyButton.addEventListener('click', () => {
+    if (!isHistoryMode || !currentRoomId) {
+      return;
+    }
+
+    const selectedStrokes = historySteps
+      .slice(0, historyCursor)
+      .flat()
+      .map((stroke) => ({ ...stroke }));
+
+    // Applique d'abord localement pour éviter le retour visuel à l'état précédent.
+    roomStrokes = selectedStrokes;
+    redrawCanvas();
+
+    sendJSON({ type: 'drawing:applyState', strokes: selectedStrokes });
+    exitHistoryMode(true);
+  });
+}
+
+if (historyExitButton) {
+  historyExitButton.addEventListener('click', () => {
+    exitHistoryMode();
   });
 }
 
@@ -524,3 +692,4 @@ if (chatForm && chatInput) {
 
 updateToolButtons();
 setupCanvasSize();
+setHistoryControlsVisible(false);

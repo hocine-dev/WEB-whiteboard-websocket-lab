@@ -86,6 +86,28 @@ function broadcastDrawingToRoom(roomId, payload) {
   });
 }
 
+function sanitizeStrokePayload(rawStroke) {
+  const stroke = {
+    from: String(rawStroke?.from || ''),
+    color: String(rawStroke?.color || '#000000'),
+    tool: rawStroke?.tool === 'eraser' ? 'eraser' : 'pen',
+    size: Number(rawStroke?.size) || 1,
+    strokeId: String(rawStroke?.strokeId || `${Date.now()}-${Math.random()}`),
+    x1: Number(rawStroke?.x1),
+    y1: Number(rawStroke?.y1),
+    x2: Number(rawStroke?.x2),
+    y2: Number(rawStroke?.y2)
+  };
+
+  const coords = [stroke.x1, stroke.y1, stroke.x2, stroke.y2];
+  const hasInvalidCoord = coords.some((n) => !Number.isFinite(n) || n < 0 || n > 1);
+  if (hasInvalidCoord) {
+    return null;
+  }
+
+  return stroke;
+}
+
 function removeClientFromRoom(client) {
   if (!client.currentRoomId) {
     return;
@@ -221,22 +243,19 @@ wss.on('connection', function(client, request) {
             return;
           }
 
-          const stroke = {
+          const stroke = sanitizeStrokePayload({
             from: client.userName,
             color: client.userColor,
-            tool: payload.tool === 'eraser' ? 'eraser' : 'pen',
-            size: Number(payload.size) || 1,
-            strokeId: String(payload.strokeId || `${Date.now()}-${Math.random()}`),
-            x1: Number(payload.x1),
-            y1: Number(payload.y1),
-            x2: Number(payload.x2),
-            y2: Number(payload.y2)
-          };
+            tool: payload.tool,
+            size: payload.size,
+            strokeId: payload.strokeId,
+            x1: payload.x1,
+            y1: payload.y1,
+            x2: payload.x2,
+            y2: payload.y2
+          });
 
-          const coords = [stroke.x1, stroke.y1, stroke.x2, stroke.y2];
-          const hasInvalidCoord = coords.some((n) => !Number.isFinite(n) || n < 0 || n > 1);
-
-          if (hasInvalidCoord) {
+          if (!stroke) {
             return;
           }
 
@@ -251,6 +270,32 @@ wss.on('connection', function(client, request) {
             type: 'drawing:stroke',
             roomId: client.currentRoomId,
             stroke
+          });
+          return;
+        }
+
+        if (payload.type === 'drawing:applyState') {
+          if (!client.currentRoomId) {
+            return;
+          }
+
+          const room = rooms.get(client.currentRoomId);
+          if (!room) {
+            return;
+          }
+
+          const incoming = Array.isArray(payload.strokes) ? payload.strokes : [];
+          const sanitized = incoming
+            .map((stroke) => sanitizeStrokePayload(stroke))
+            .filter((stroke) => stroke !== null);
+
+          room.drawing = sanitized;
+
+          broadcastDrawingToRoom(client.currentRoomId, {
+            type: 'drawing:state',
+            roomId: client.currentRoomId,
+            strokes: room.drawing,
+            updatedBy: client.userName
           });
           return;
         }
