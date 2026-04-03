@@ -19,6 +19,14 @@ type RoomSummary = {
   userCount: number;
 };
 
+type SavedDrawingSummary = {
+  id: string;
+  name: string;
+  savedAt: number;
+  savedBy: string;
+  strokeCount: number;
+};
+
 type DrawingTool = 'pen' | 'eraser';
 
 type DrawStroke = {
@@ -42,6 +50,10 @@ type ServerMessage =
   | { type: 'rooms:list'; rooms: RoomSummary[] }
   | { type: 'room:joined'; room: { id: string; name: string }; user: { name: string; color: string } }
   | { type: 'room:error'; message: string }
+  | { type: 'drawing:saved:list'; saves: SavedDrawingSummary[] }
+  | { type: 'drawing:saved'; save: SavedDrawingSummary }
+  | { type: 'drawing:deleted'; saveId: string }
+  | { type: 'drawing:restored'; saveId: string; room: { id: string; name: string } }
   | { type: 'users:list'; roomId: string; users: ConnectedUser[] }
   | { type: 'chat:message'; roomId: string; from: string; text: string; sentAt: number }
   | { type: 'drawing:state'; roomId: string; strokes: DrawStroke[]; updatedBy?: string }
@@ -80,6 +92,7 @@ const canvasScreen = document.querySelector('#canvas-screen') as HTMLElement | n
 const roomTitle = document.querySelector('#room-title') as HTMLElement | null;
 
 const roomList = document.querySelector('#room-list') as HTMLUListElement | null;
+const savedDrawingsList = document.querySelector('#saved-drawings') as HTMLUListElement | null;
 const newRoomInput = document.querySelector('#new-room-name') as HTMLInputElement | null;
 const newRoomButton = document.querySelector('#new-room-btn') as HTMLButtonElement | null;
 const leaveButton = document.querySelector('#leave-btn') as HTMLButtonElement | null;
@@ -95,6 +108,7 @@ const toolEraserButton = document.querySelector('#tool-eraser') as HTMLButtonEle
 const brushSizeInput = document.querySelector('#brush-size') as HTMLInputElement | null;
 const clearButton = document.querySelector('#btn-clear') as HTMLButtonElement | null;
 const saveButton = document.querySelector('#btn-save') as HTMLButtonElement | null;
+const saveStatus = document.querySelector('#save-status') as HTMLSpanElement | null;
 const historyButton = document.querySelector('#btn-history') as HTMLButtonElement | null;
 const historyBackButton = document.querySelector('#btn-history-back') as HTMLButtonElement | null;
 const historyForwardButton = document.querySelector('#btn-history-forward') as HTMLButtonElement | null;
@@ -104,6 +118,7 @@ const historyStep = document.querySelector('#history-step') as HTMLSpanElement |
 
 const context = canvas ? canvas.getContext('2d') : null;
 const ws = new WebSocket('ws://localhost:1234');
+let saveStatusTimer: ReturnType<typeof setTimeout> | null = null;
 
 function hashColor(seed: string): string {
   let hash = 0;
@@ -116,6 +131,29 @@ function hashColor(seed: string): string {
 function sendJSON(payload: Record<string, unknown>): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
+  }
+}
+
+function showSaveStatus(message: string, state: 'pending' | 'success' | 'error', autoHideMs = 2200): void {
+  if (!saveStatus) {
+    return;
+  }
+
+  saveStatus.textContent = message;
+  saveStatus.classList.remove('hidden', 'pending', 'success', 'error');
+  saveStatus.classList.add(state);
+
+  if (saveStatusTimer) {
+    clearTimeout(saveStatusTimer);
+    saveStatusTimer = null;
+  }
+
+  if (autoHideMs > 0) {
+    saveStatusTimer = setTimeout(() => {
+      saveStatus?.classList.add('hidden');
+      saveStatus?.classList.remove('pending', 'success', 'error');
+      saveStatusTimer = null;
+    }, autoHideMs);
   }
 }
 
@@ -437,6 +475,10 @@ function showLobby(): void {
   currentRoomId = null;
   isDrawing = false;
   lastPoint = null;
+  if (saveStatus) {
+    saveStatus.classList.add('hidden');
+    saveStatus.classList.remove('pending', 'success', 'error');
+  }
   exitHistoryMode();
   renderConnectedUsers([]);
 }
@@ -497,9 +539,66 @@ function renderRooms(rooms: RoomSummary[]): void {
   }
 }
 
+function renderSavedDrawings(saves: SavedDrawingSummary[]): void {
+  if (!savedDrawingsList) {
+    return;
+  }
+
+  savedDrawingsList.innerHTML = '';
+
+  for (const save of saves) {
+    const item = document.createElement('li');
+
+    const content = document.createElement('div');
+    content.className = 'saved-content';
+
+    const title = document.createElement('div');
+    title.className = 'room-name';
+    title.textContent = save.name;
+
+    const meta = document.createElement('div');
+    meta.className = 'saved-meta';
+    meta.textContent = `${save.strokeCount} trait(s) • ${save.savedBy}`;
+
+    content.appendChild(title);
+    content.appendChild(meta);
+
+    const restoreButton = document.createElement('button');
+    restoreButton.className = 'restore-btn';
+    restoreButton.type = 'button';
+    restoreButton.textContent = 'Restaurer';
+    restoreButton.addEventListener('click', () => {
+      sendJSON({ type: 'drawing:restore', saveId: save.id });
+    });
+
+    const deleteButton = document.createElement('button');
+    deleteButton.className = 'delete-save-btn';
+    deleteButton.type = 'button';
+    deleteButton.textContent = 'Supprimer';
+    deleteButton.addEventListener('click', () => {
+      const confirmed = window.confirm(`Supprimer la sauvegarde "${save.name}" ?`);
+      if (!confirmed) {
+        return;
+      }
+
+      sendJSON({ type: 'drawing:delete', saveId: save.id });
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'saved-actions';
+    actions.appendChild(restoreButton);
+    actions.appendChild(deleteButton);
+
+    item.appendChild(content);
+    item.appendChild(actions);
+    savedDrawingsList.appendChild(item);
+  }
+}
+
 ws.onopen = (event: Event) => {
   console.log('WebSocket connection opened:', event);
   sendJSON({ type: 'room:list' });
+  sendJSON({ type: 'drawing:saved:list' });
 };
 
 ws.onmessage = (event: MessageEvent) => {
@@ -520,7 +619,29 @@ ws.onmessage = (event: MessageEvent) => {
     }
 
     if (data.type === 'room:error') {
+      showSaveStatus(data.message || 'Erreur côté serveur', 'error', 3000);
       console.warn(data.message);
+      return;
+    }
+
+    if (data.type === 'drawing:saved:list') {
+      renderSavedDrawings(data.saves);
+      return;
+    }
+
+    if (data.type === 'drawing:saved') {
+      showSaveStatus('Sauvegarde terminée', 'success');
+      sendJSON({ type: 'drawing:saved:list' });
+      return;
+    }
+
+    if (data.type === 'drawing:deleted') {
+      showSaveStatus('Sauvegarde supprimée', 'success');
+      return;
+    }
+
+    if (data.type === 'drawing:restored') {
+      sendJSON({ type: 'room:join', roomId: data.room.id });
       return;
     }
 
@@ -637,10 +758,14 @@ if (clearButton) {
 
 if (saveButton && canvas) {
   saveButton.addEventListener('click', () => {
-    const link = document.createElement('a');
-    link.href = canvas.toDataURL('image/png');
-    link.download = `canvas-${Date.now()}.png`;
-    link.click();
+    if (!currentRoomId) {
+      showSaveStatus('Rejoins un canvas avant de sauvegarder', 'error', 3000);
+      return;
+    }
+
+    const saveName = roomTitle?.textContent?.trim() || 'Dessin';
+    showSaveStatus('Sauvegarde en cours...', 'pending', 0);
+    sendJSON({ type: 'drawing:save', name: saveName });
   });
 }
 

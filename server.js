@@ -1,4 +1,5 @@
 import http from 'http';
+import fs from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 
 const port = 1234;
@@ -12,6 +13,12 @@ const wss = new WebSocketServer({
   server: server
 });
 
+const STORE_FILE = new URL('./drawings-store.json', import.meta.url);
+
+const persistentStore = {
+  saves: []
+};
+
 // Les salles sont stockées en mémoire tant que le serveur tourne.
 // Chaque salle garde la liste des clients connectés pour compter les participants.
 const rooms = new Map();
@@ -23,6 +30,33 @@ function computeUserColor(name) {
   }
 
   return `hsl(${hash}, 78%, 58%)`;
+}
+
+function loadPersistentStore() {
+  try {
+    if (!fs.existsSync(STORE_FILE)) {
+      return;
+    }
+
+    const raw = fs.readFileSync(STORE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    const saves = Array.isArray(parsed?.saves) ? parsed.saves : [];
+
+    persistentStore.saves = saves.map((save) => ({
+      id: String(save?.id || `${Date.now()}-${Math.random()}`),
+      name: String(save?.name || 'Dessin sauvegarde'),
+      savedAt: Number(save?.savedAt) || Date.now(),
+      savedBy: String(save?.savedBy || 'Inconnu'),
+      strokes: sanitizeStrokeList(Array.isArray(save?.strokes) ? save.strokes : [])
+    }));
+  } catch (error) {
+    console.error('Impossible de charger drawings-store.json:', error);
+    persistentStore.saves = [];
+  }
+}
+
+function writePersistentStore() {
+  fs.writeFileSync(STORE_FILE, JSON.stringify(persistentStore, null, 2), 'utf8');
 }
 
 function createRoom(name) {
@@ -38,6 +72,28 @@ function createRoom(name) {
   return room;
 }
 
+function createRestoredRoomName(baseName) {
+  const cleanBaseName = String(baseName || 'Dessin').trim() || 'Dessin';
+  const escapedName = cleanBaseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const suffixPattern = new RegExp(`^${escapedName}(\\d+)$`);
+
+  let maxSuffix = 0;
+
+  for (const room of rooms.values()) {
+    const match = String(room.name).match(suffixPattern);
+    if (!match) {
+      continue;
+    }
+
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value > maxSuffix) {
+      maxSuffix = value;
+    }
+  }
+
+  return `${cleanBaseName}${maxSuffix + 1}`;
+}
+
 function serializeRooms() {
   return Array.from(rooms.values())
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -45,6 +101,18 @@ function serializeRooms() {
       id: room.id,
       name: room.name,
       userCount: room.users.size
+    }));
+}
+
+function serializeSavedDrawings() {
+  return persistentStore.saves
+    .sort((a, b) => b.savedAt - a.savedAt)
+    .map((save) => ({
+      id: save.id,
+      name: save.name,
+      savedAt: save.savedAt,
+      savedBy: save.savedBy,
+      strokeCount: save.strokes.length
     }));
 }
 
@@ -72,6 +140,17 @@ function broadcastRooms() {
     type: 'rooms:list',
     rooms: serializeRooms()
   };
+  wss.clients.forEach((client) => {
+    sendJSON(client, payload);
+  });
+}
+
+function broadcastSavedDrawingsList() {
+  const payload = {
+    type: 'drawing:saved:list',
+    saves: serializeSavedDrawings()
+  };
+
   wss.clients.forEach((client) => {
     sendJSON(client, payload);
   });
@@ -138,6 +217,12 @@ function sanitizeStrokePayload(rawStroke) {
   return stroke;
 }
 
+function sanitizeStrokeList(rawList) {
+  return rawList
+    .map((stroke) => sanitizeStrokePayload(stroke))
+    .filter((stroke) => stroke !== null);
+}
+
 function removeClientFromRoom(client) {
   if (!client.currentRoomId) {
     return null;
@@ -175,6 +260,11 @@ wss.on('connection', function(client, request) {
     sendJSON(client, {
       type: 'rooms:list',
       rooms: serializeRooms()
+    });
+
+    sendJSON(client, {
+      type: 'drawing:saved:list',
+      saves: serializeSavedDrawings()
     });
 
     // Écoute chaque message reçu pour ce client.
@@ -342,6 +432,111 @@ wss.on('connection', function(client, request) {
           return;
         }
 
+        if (payload.type === 'drawing:saved:list') {
+          sendJSON(client, {
+            type: 'drawing:saved:list',
+            saves: serializeSavedDrawings()
+          });
+          return;
+        }
+
+        if (payload.type === 'drawing:save') {
+          if (!client.currentRoomId) {
+            sendJSON(client, {
+              type: 'room:error',
+              message: 'Aucune salle active pour sauvegarder'
+            });
+            return;
+          }
+
+          const room = rooms.get(client.currentRoomId);
+          if (!room) {
+            return;
+          }
+
+          const requestedName = String(payload.name || '').trim();
+          const saveName = requestedName.length > 0 ? requestedName : room.name;
+
+          const save = {
+            id: `${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+            name: saveName,
+            savedAt: Date.now(),
+            savedBy: client.userName,
+            strokes: room.drawing.map((stroke) => ({ ...stroke }))
+          };
+
+          persistentStore.saves.unshift(save);
+          if (persistentStore.saves.length > 200) {
+            persistentStore.saves = persistentStore.saves.slice(0, 200);
+          }
+
+          writePersistentStore();
+          broadcastSavedDrawingsList();
+
+          sendJSON(client, {
+            type: 'drawing:saved',
+            save: {
+              id: save.id,
+              name: save.name,
+              savedAt: save.savedAt,
+              savedBy: save.savedBy,
+              strokeCount: save.strokes.length
+            }
+          });
+          return;
+        }
+
+        if (payload.type === 'drawing:restore') {
+          const saveId = String(payload.saveId || '');
+          const saved = persistentStore.saves.find((save) => save.id === saveId);
+          if (!saved) {
+            sendJSON(client, {
+              type: 'room:error',
+              message: 'Sauvegarde introuvable'
+            });
+            return;
+          }
+
+          const restoredRoomName = createRestoredRoomName(saved.name);
+          const restoredRoom = createRoom(restoredRoomName);
+          restoredRoom.drawing = saved.strokes.map((stroke) => ({ ...stroke }));
+
+          broadcastRooms();
+
+          sendJSON(client, {
+            type: 'drawing:restored',
+            saveId: saved.id,
+            room: {
+              id: restoredRoom.id,
+              name: restoredRoom.name
+            }
+          });
+          return;
+        }
+
+        if (payload.type === 'drawing:delete') {
+          const saveId = String(payload.saveId || '');
+          const saveIndex = persistentStore.saves.findIndex((save) => save.id === saveId);
+
+          if (saveIndex < 0) {
+            sendJSON(client, {
+              type: 'room:error',
+              message: 'Sauvegarde introuvable'
+            });
+            return;
+          }
+
+          persistentStore.saves.splice(saveIndex, 1);
+          writePersistentStore();
+          broadcastSavedDrawingsList();
+
+          sendJSON(client, {
+            type: 'drawing:deleted',
+            saveId
+          });
+          return;
+        }
+
         if (payload.type === 'drawing:clear') {
           if (!client.currentRoomId) {
             return;
@@ -390,6 +585,8 @@ wss.on('connection', function(client, request) {
 server.listen(port, host, function() {
   console.log('Listening on ' + server.address().address + ':' + server.address().port);
 });
+
+loadPersistentStore();
 
 process.on('SIGINT', function() {
   process.exit(0);

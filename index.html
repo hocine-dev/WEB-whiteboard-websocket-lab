@@ -33,6 +33,9 @@
           <ul id="room-list">
 
           </ul>
+
+          <h2 style="margin-top: 24px;">Dessins sauvegardés</h2>
+          <ul id="saved-drawings"></ul>
         </section>
 
       </main>
@@ -62,6 +65,7 @@
           </label>
           <button id="btn-clear">Effacer tout</button>
           <button id="btn-save">Sauvegarder</button>
+          <span id="save-status" class="save-status hidden" aria-live="polite"></span>
           <button id="btn-history">Voir historique</button>
           <button id="btn-history-back" class="hidden">Back</button>
           <button id="btn-history-forward" class="hidden">Forward</button>
@@ -92,3 +96,4 @@
     <script type="module" src="/src/index.ts"></script>
   </body>
 </html>
+
