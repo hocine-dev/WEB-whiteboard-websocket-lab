@@ -16,13 +16,23 @@ const wss = new WebSocketServer({
 // Chaque salle garde la liste des clients connectés pour compter les participants.
 const rooms = new Map();
 
+function computeUserColor(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = (hash * 31 + name.charCodeAt(i)) % 360;
+  }
+
+  return `hsl(${hash}, 78%, 58%)`;
+}
+
 function createRoom(name) {
   const id = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const room = {
     id,
     name,
     createdAt: Date.now(),
-    users: new Set()
+    users: new Set(),
+    drawing: []
   };
   rooms.set(id, room);
   return room;
@@ -65,6 +75,17 @@ function broadcastChatToRoom(roomId, payload) {
   });
 }
 
+function broadcastDrawingToRoom(roomId, payload) {
+  const room = rooms.get(roomId);
+  if (!room) {
+    return;
+  }
+
+  room.users.forEach((member) => {
+    sendJSON(member, payload);
+  });
+}
+
 function removeClientFromRoom(client) {
   if (!client.currentRoomId) {
     return;
@@ -92,6 +113,8 @@ wss.on('connection', function(client, request) {
 
     // On rattache l'identifiant de salle active au client.
     client.currentRoomId = null;
+    client.userName = decodeURIComponent(wsname);
+    client.userColor = computeUserColor(client.userName);
 
     // Envoie la liste actuelle des salles à chaque nouvelle connexion.
     sendJSON(client, {
@@ -141,7 +164,17 @@ wss.on('connection', function(client, request) {
             room: {
               id: room.id,
               name: room.name
+            },
+            user: {
+              name: client.userName,
+              color: client.userColor
             }
+          });
+
+          sendJSON(client, {
+            type: 'drawing:state',
+            roomId: room.id,
+            strokes: room.drawing
           });
 
           broadcastRooms();
@@ -172,9 +205,72 @@ wss.on('connection', function(client, request) {
           broadcastChatToRoom(client.currentRoomId, {
             type: 'chat:message',
             roomId: client.currentRoomId,
-            from: decodeURIComponent(wsname),
+            from: client.userName,
             text,
             sentAt: Date.now()
+          });
+          return;
+        }
+
+        if (payload.type === 'drawing:stroke') {
+          if (!client.currentRoomId) {
+            sendJSON(client, {
+              type: 'room:error',
+              message: 'Aucune salle rejointe pour dessiner'
+            });
+            return;
+          }
+
+          const stroke = {
+            from: client.userName,
+            color: client.userColor,
+            tool: payload.tool === 'eraser' ? 'eraser' : 'pen',
+            size: Number(payload.size) || 1,
+            strokeId: String(payload.strokeId || `${Date.now()}-${Math.random()}`),
+            x1: Number(payload.x1),
+            y1: Number(payload.y1),
+            x2: Number(payload.x2),
+            y2: Number(payload.y2)
+          };
+
+          const coords = [stroke.x1, stroke.y1, stroke.x2, stroke.y2];
+          const hasInvalidCoord = coords.some((n) => !Number.isFinite(n) || n < 0 || n > 1);
+
+          if (hasInvalidCoord) {
+            return;
+          }
+
+          const room = rooms.get(client.currentRoomId);
+          if (!room) {
+            return;
+          }
+
+          room.drawing.push(stroke);
+
+          broadcastDrawingToRoom(client.currentRoomId, {
+            type: 'drawing:stroke',
+            roomId: client.currentRoomId,
+            stroke
+          });
+          return;
+        }
+
+        if (payload.type === 'drawing:clear') {
+          if (!client.currentRoomId) {
+            return;
+          }
+
+          const room = rooms.get(client.currentRoomId);
+          if (!room) {
+            return;
+          }
+
+          room.drawing = [];
+
+          broadcastDrawingToRoom(client.currentRoomId, {
+            type: 'drawing:clear',
+            roomId: client.currentRoomId,
+            by: client.userName
           });
           return;
         }
