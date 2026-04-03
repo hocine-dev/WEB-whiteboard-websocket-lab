@@ -222,3 +222,162 @@ test('feat1 - rejoindre un canvas retourne room:joined et drawing:state', async 
     bob.close();
   }
 });
+
+test('feat2 - un trait est diffuse en temps reel et rejoue aux nouveaux arrivants', async () => {
+  const alice = await createClient('alice-draw');
+  const bob = await createClient('bob-draw');
+  const charlie = await createClient('charlie-draw');
+
+  try {
+    await consumeHandshakeMessages(alice);
+    await consumeHandshakeMessages(bob);
+    await consumeHandshakeMessages(charlie);
+
+    const roomName = `feat2-draw-${Date.now()}`;
+
+    const roomCreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomName });
+
+    const roomListMsg = await roomCreated;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room, 'La salle du test draw doit exister');
+
+    const aliceJoinedPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const aliceStatePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: room.id });
+    const aliceJoined = await aliceJoinedPromise;
+    await aliceStatePromise;
+
+    const bobJoinedPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const bobStatePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(bob, { type: 'room:join', roomId: room.id });
+    await bobJoinedPromise;
+    await bobStatePromise;
+
+    const strokePayload = {
+      type: 'drawing:stroke',
+      strokeId: `stroke-${Date.now()}`,
+      tool: 'pen',
+      size: 5,
+      x1: 0.1,
+      y1: 0.2,
+      x2: 0.3,
+      y2: 0.4
+    };
+
+    const bobStrokePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:stroke' && msg.roomId === room.id
+    );
+
+    sendJson(alice, strokePayload);
+    const bobStrokeMessage = await bobStrokePromise;
+
+    assert.equal(bobStrokeMessage.stroke.from, 'alice-draw');
+    assert.equal(bobStrokeMessage.stroke.color, aliceJoined.user.color);
+    assert.equal(bobStrokeMessage.stroke.tool, 'pen');
+    assert.equal(bobStrokeMessage.stroke.size, 5);
+
+    const charlieJoinedPromise = waitForJson(
+      charlie,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const charlieStatePromise = waitForJson(
+      charlie,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id && msg.strokes.length >= 1
+    );
+
+    sendJson(charlie, { type: 'room:join', roomId: room.id });
+    await charlieJoinedPromise;
+    const charlieState = await charlieStatePromise;
+
+    assert.equal(charlieState.strokes.length, 1);
+    assert.equal(charlieState.strokes[0].from, 'alice-draw');
+    assert.equal(charlieState.strokes[0].strokeId, strokePayload.strokeId);
+  } finally {
+    alice.close();
+    bob.close();
+    charlie.close();
+  }
+});
+
+test('feat2 - la couleur utilisateur est stable pour un nom donne et differente entre utilisateurs', async () => {
+  const aliceA = await createClient('alice-color');
+  const bob = await createClient('bob-color');
+  const aliceB = await createClient('alice-color');
+
+  try {
+    await consumeHandshakeMessages(aliceA);
+    await consumeHandshakeMessages(bob);
+    await consumeHandshakeMessages(aliceB);
+
+    const roomName = `feat2-color-${Date.now()}`;
+    const roomCreated = waitForJson(
+      aliceA,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(aliceA, { type: 'room:create', name: roomName });
+
+    const roomListMsg = await roomCreated;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room, 'La salle du test couleur doit exister');
+
+    const aliceAJoinedPromise = waitForJson(
+      aliceA,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const aliceAStatePromise = waitForJson(
+      aliceA,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(aliceA, { type: 'room:join', roomId: room.id });
+    const aliceAJoined = await aliceAJoinedPromise;
+    await aliceAStatePromise;
+
+    const bobJoinedPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const bobStatePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(bob, { type: 'room:join', roomId: room.id });
+    const bobJoined = await bobJoinedPromise;
+    await bobStatePromise;
+
+    const aliceBJoinedPromise = waitForJson(
+      aliceB,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const aliceBStatePromise = waitForJson(
+      aliceB,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(aliceB, { type: 'room:join', roomId: room.id });
+    const aliceBJoined = await aliceBJoinedPromise;
+    await aliceBStatePromise;
+
+    assert.equal(aliceAJoined.user.color, aliceBJoined.user.color);
+    assert.notEqual(aliceAJoined.user.color, bobJoined.user.color);
+  } finally {
+    aliceA.close();
+    bob.close();
+    aliceB.close();
+  }
+});
