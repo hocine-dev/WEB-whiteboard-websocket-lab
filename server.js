@@ -2,8 +2,8 @@ import http from 'http';
 import fs from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 
-const port = 1234;
-const host = '0.0.0.0';
+const port = Number(process.env.WS_PORT || 1234);
+const host = process.env.WS_HOST || '0.0.0.0';
 
 // Crée un serveur HTTP bas niveau (TCP, sockets, handshake HTTP, etc.).
 const server = http.createServer();

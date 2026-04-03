@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "concurrently -k -s first \"node server.js\" vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test":"node --test index.test.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
