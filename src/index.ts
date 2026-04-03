@@ -1,4 +1,4 @@
-﻿import './index.css';
+﻿﻿import './index.css';
 import nameGenerator from './name-generator';
 
 function getCookie(name: string): string | null {
@@ -33,10 +33,16 @@ type DrawStroke = {
   y2: number;
 };
 
+type ConnectedUser = {
+  name: string;
+  color: string;
+};
+
 type ServerMessage =
   | { type: 'rooms:list'; rooms: RoomSummary[] }
   | { type: 'room:joined'; room: { id: string; name: string }; user: { name: string; color: string } }
   | { type: 'room:error'; message: string }
+  | { type: 'users:list'; roomId: string; users: ConnectedUser[] }
   | { type: 'chat:message'; roomId: string; from: string; text: string; sentAt: number }
   | { type: 'drawing:state'; roomId: string; strokes: DrawStroke[]; updatedBy?: string }
   | { type: 'drawing:stroke'; roomId: string; stroke: DrawStroke }
@@ -79,6 +85,7 @@ const newRoomButton = document.querySelector('#new-room-btn') as HTMLButtonEleme
 const leaveButton = document.querySelector('#leave-btn') as HTMLButtonElement | null;
 
 const messagesList = document.querySelector('#messages') as HTMLUListElement | null;
+const connectedUsersList = document.querySelector('#connected-users') as HTMLUListElement | null;
 const chatForm = document.querySelector('#chat-form') as HTMLFormElement | null;
 const chatInput = document.querySelector('#chat-input') as HTMLInputElement | null;
 
@@ -396,6 +403,29 @@ function addMessageToChat(from: string, text: string): void {
   messagesList.scrollTop = messagesList.scrollHeight;
 }
 
+function renderConnectedUsers(users: ConnectedUser[]): void {
+  if (!connectedUsersList) {
+    return;
+  }
+
+  connectedUsersList.innerHTML = '';
+
+  for (const user of users) {
+    const item = document.createElement('li');
+
+    const dot = document.createElement('span');
+    dot.className = 'user-color-dot';
+    dot.style.backgroundColor = user.color;
+
+    const name = document.createElement('span');
+    name.textContent = user.name;
+
+    item.appendChild(dot);
+    item.appendChild(name);
+    connectedUsersList.appendChild(item);
+  }
+}
+
 function showLobby(): void {
   if (lobbyScreen) {
     lobbyScreen.classList.remove('hidden');
@@ -408,6 +438,7 @@ function showLobby(): void {
   isDrawing = false;
   lastPoint = null;
   exitHistoryMode();
+  renderConnectedUsers([]);
 }
 
 function showCanvas(roomId: string, roomName: string): void {
@@ -490,6 +521,13 @@ ws.onmessage = (event: MessageEvent) => {
 
     if (data.type === 'room:error') {
       console.warn(data.message);
+      return;
+    }
+
+    if (data.type === 'users:list') {
+      if (currentRoomId && data.roomId === currentRoomId) {
+        renderConnectedUsers(data.users);
+      }
       return;
     }
 

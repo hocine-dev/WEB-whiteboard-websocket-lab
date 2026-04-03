@@ -48,6 +48,19 @@ function serializeRooms() {
     }));
 }
 
+function serializeUsers(room) {
+  if (!room) {
+    return [];
+  }
+
+  return Array.from(room.users)
+    .map((client) => ({
+      name: client.userName,
+      color: client.userColor
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function sendJSON(client, payload) {
   if (client.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify(payload));
@@ -86,6 +99,23 @@ function broadcastDrawingToRoom(roomId, payload) {
   });
 }
 
+function broadcastUsersToRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) {
+    return;
+  }
+
+  const payload = {
+    type: 'users:list',
+    roomId,
+    users: serializeUsers(room)
+  };
+
+  room.users.forEach((member) => {
+    sendJSON(member, payload);
+  });
+}
+
 function sanitizeStrokePayload(rawStroke) {
   const stroke = {
     from: String(rawStroke?.from || ''),
@@ -110,8 +140,10 @@ function sanitizeStrokePayload(rawStroke) {
 
 function removeClientFromRoom(client) {
   if (!client.currentRoomId) {
-    return;
+    return null;
   }
+
+  const previousRoomId = client.currentRoomId;
 
   const room = rooms.get(client.currentRoomId);
   if (room) {
@@ -119,6 +151,7 @@ function removeClientFromRoom(client) {
   }
 
   client.currentRoomId = null;
+  return previousRoomId;
 }
 
 
@@ -177,7 +210,11 @@ wss.on('connection', function(client, request) {
             return;
           }
 
-          removeClientFromRoom(client);
+          const previousRoomId = removeClientFromRoom(client);
+          if (previousRoomId && previousRoomId !== roomId) {
+            broadcastUsersToRoom(previousRoomId);
+          }
+
           room.users.add(client);
           client.currentRoomId = roomId;
 
@@ -199,12 +236,17 @@ wss.on('connection', function(client, request) {
             strokes: room.drawing
           });
 
+          broadcastUsersToRoom(roomId);
+
           broadcastRooms();
           return;
         }
 
         if (payload.type === 'room:leave') {
-          removeClientFromRoom(client);
+          const previousRoomId = removeClientFromRoom(client);
+          if (previousRoomId) {
+            broadcastUsersToRoom(previousRoomId);
+          }
           broadcastRooms();
           return;
         }
@@ -335,7 +377,10 @@ wss.on('connection', function(client, request) {
     });
 
     client.on('close', function() {
-      removeClientFromRoom(client);
+      const previousRoomId = removeClientFromRoom(client);
+      if (previousRoomId) {
+        broadcastUsersToRoom(previousRoomId);
+      }
       broadcastRooms();
     });
   }

@@ -285,6 +285,43 @@ body {
   overflow: hidden;
 }
 
+#connected-users-panel {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+#connected-users-panel h3 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+#connected-users {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+#connected-users li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.user-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 10px;
+}
+
 #messages {
   flex: 1;
   list-style: none;
