@@ -561,3 +561,97 @@ test('feat4 - users:list est diffuse avec couleurs et mis a jour au depart', asy
     bob.close();
   }
 });
+
+test('feat5 - sauvegarder, restaurer puis supprimer une sauvegarde', async () => {
+  const alice = await createClient('alice-save');
+
+  try {
+    await consumeHandshakeMessages(alice);
+
+    const roomName = `feat5-save-${Date.now()}`;
+    const roomCreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomName });
+
+    const roomListMsg = await roomCreated;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room, 'La salle du test sauvegarde doit exister');
+
+    const joinedPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room?.id === room.id
+    );
+    const initialStatePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: room.id });
+    await joinedPromise;
+    await initialStatePromise;
+
+    sendJson(alice, {
+      type: 'drawing:stroke',
+      strokeId: `feat5-stroke-${Date.now()}`,
+      tool: 'pen',
+      size: 3,
+      x1: 0.1,
+      y1: 0.1,
+      x2: 0.2,
+      y2: 0.2
+    });
+
+    await waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:stroke' && msg.roomId === room.id
+    );
+
+    const saveName = 'dessinSauvegarde';
+    const savedPromise = waitForJson(alice, (msg) => msg.type === 'drawing:saved');
+    sendJson(alice, { type: 'drawing:save', name: saveName });
+    const saved = await savedPromise;
+
+    assert.equal(saved.save.name, saveName);
+    assert.ok(saved.save.id, 'Un id de sauvegarde est attendu');
+
+    const savedListPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:saved:list' && msg.saves.some((s) => s.id === saved.save.id)
+    );
+    sendJson(alice, { type: 'drawing:saved:list' });
+    const savedList = await savedListPromise;
+    const savedEntry = savedList.saves.find((s) => s.id === saved.save.id);
+
+    assert.ok(savedEntry, 'La sauvegarde doit apparaitre dans la liste');
+    assert.equal(savedEntry.name, saveName);
+    assert.ok(savedEntry.strokeCount >= 1, 'La sauvegarde doit contenir au moins un trait');
+
+    const restorePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:restored' && msg.saveId === saved.save.id
+    );
+    sendJson(alice, { type: 'drawing:restore', saveId: saved.save.id });
+    const restored = await restorePromise;
+
+    assert.ok(restored.room?.id, 'La restauration doit creer une nouvelle salle');
+    assert.equal(restored.room.name, `${saveName}1`);
+
+    const deleteAckPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:deleted' && msg.saveId === saved.save.id
+    );
+    sendJson(alice, { type: 'drawing:delete', saveId: saved.save.id });
+    await deleteAckPromise;
+
+    const listAfterDeletePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:saved:list' && !msg.saves.some((s) => s.id === saved.save.id)
+    );
+    sendJson(alice, { type: 'drawing:saved:list' });
+    const listAfterDelete = await listAfterDeletePromise;
+    assert.ok(!listAfterDelete.saves.some((s) => s.id === saved.save.id));
+  } finally {
+    alice.close();
+  }
+});
