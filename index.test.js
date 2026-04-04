@@ -1,13 +1,12 @@
+/* node:coverage disable */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { WebSocket } from 'ws';
 
 const TEST_PORT = 1235;
 const WS_URL = `ws://127.0.0.1:${TEST_PORT}`;
 
-let serverProcess;
+let serverModule;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,6 +23,27 @@ function createClient(userName) {
     const timeout = setTimeout(() => {
       ws.terminate();
       reject(new Error('Timeout ouverture WebSocket'));
+    }, 5000);
+
+    ws.once('open', () => {
+      clearTimeout(timeout);
+      resolve(ws);
+    });
+
+    ws.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+  });
+}
+
+function createAnonymousClient() {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(WS_URL);
+
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      reject(new Error('Timeout ouverture WebSocket anonyme'));
     }, 5000);
 
     ws.once('open', () => {
@@ -70,6 +90,38 @@ function sendJson(ws, payload) {
   ws.send(JSON.stringify(payload));
 }
 
+function sendRaw(ws, text) {
+  ws.send(text);
+}
+
+function expectNoJson(ws, predicate, timeoutMs = 300) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off('message', onMessage);
+      resolve();
+    }, timeoutMs);
+
+    function onMessage(raw) {
+      let parsed;
+      try {
+        parsed = JSON.parse(String(raw));
+      } catch {
+        return;
+      }
+
+      if (!predicate(parsed)) {
+        return;
+      }
+
+      clearTimeout(timer);
+      ws.off('message', onMessage);
+      reject(new Error('Message inattendu reçu'));
+    }
+
+    ws.on('message', onMessage);
+  });
+}
+
 async function consumeHandshakeMessages(ws) {
   sendJson(ws, { type: 'room:list' });
   sendJson(ws, { type: 'drawing:saved:list' });
@@ -111,33 +163,28 @@ async function consumeHandshakeMessages(ws) {
 }
 
 before(async () => {
-  serverProcess = spawn('node', ['server.js'], {
-    env: {
-      ...process.env,
-      WS_PORT: String(TEST_PORT)
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
+  serverModule = await import('./server.js');
+  await serverModule.startServer({
+    port: TEST_PORT,
+    host: '127.0.0.1'
   });
 
-  serverProcess.stderr.on('data', () => {
-    // Consomme stderr pour éviter le blocage du buffer.
+  // Couvre le chemin startServer quand le serveur est déjà démarré.
+  await serverModule.startServer({
+    port: TEST_PORT,
+    host: '127.0.0.1'
   });
-
-  const [chunk] = await once(serverProcess.stdout, 'data');
-  const output = String(chunk);
-  assert.match(output, /Listening on/);
 });
 
 after(async () => {
-  if (!serverProcess || serverProcess.killed) {
+  if (!serverModule) {
     return;
   }
 
-  serverProcess.kill('SIGINT');
-  await Promise.race([
-    once(serverProcess, 'exit'),
-    wait(2000)
-  ]);
+  await Promise.race([serverModule.stopServer(), wait(2000)]);
+
+  // Couvre le chemin stopServer quand le serveur est déjà arrêté.
+  await serverModule.stopServer();
 });
 
 test('feat1 - creer un canvas puis le voir dans la liste', async () => {
@@ -651,6 +698,334 @@ test('feat5 - sauvegarder, restaurer puis supprimer une sauvegarde', async () =>
     sendJson(alice, { type: 'drawing:saved:list' });
     const listAfterDelete = await listAfterDeletePromise;
     assert.ok(!listAfterDelete.saves.some((s) => s.id === saved.save.id));
+  } finally {
+    alice.close();
+  }
+});
+
+test('coverage - protocole: json invalide, type inconnu, room introuvable', async () => {
+  const alice = await createClient('alice-errors');
+
+  try {
+    await consumeHandshakeMessages(alice);
+
+    const invalidJsonPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Format invalide, JSON attendu'
+    );
+    sendRaw(alice, 'not-a-json');
+    await invalidJsonPromise;
+
+    const unknownTypePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Type de message non pris en charge'
+    );
+    sendJson(alice, { type: 'unknown:type' });
+    await unknownTypePromise;
+
+    const roomNotFoundPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Room not found'
+    );
+    sendJson(alice, { type: 'room:join', roomId: 'missing-room' });
+    await roomNotFoundPromise;
+  } finally {
+    alice.close();
+  }
+});
+
+test('coverage - erreurs metier sans salle active', async () => {
+  const alice = await createClient('alice-no-room');
+
+  try {
+    await consumeHandshakeMessages(alice);
+
+    const chatErrorPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Aucune salle rejointe pour envoyer un message'
+    );
+    sendJson(alice, { type: 'chat:send', text: 'hello' });
+    await chatErrorPromise;
+
+    const drawErrorPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Aucune salle rejointe pour dessiner'
+    );
+    sendJson(alice, { type: 'drawing:stroke', x1: 0, y1: 0, x2: 0.1, y2: 0.1 });
+    await drawErrorPromise;
+
+    const saveErrorPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Aucune salle active pour sauvegarder'
+    );
+    sendJson(alice, { type: 'drawing:save', name: 'x' });
+    await saveErrorPromise;
+
+    const restoreErrorPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Sauvegarde introuvable'
+    );
+    sendJson(alice, { type: 'drawing:restore', saveId: 'missing-save' });
+    await restoreErrorPromise;
+
+    const deleteErrorPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:error' && msg.message === 'Sauvegarde introuvable'
+    );
+    sendJson(alice, { type: 'drawing:delete', saveId: 'missing-save' });
+    await deleteErrorPromise;
+  } finally {
+    alice.close();
+  }
+});
+
+test('coverage - chat diffuse, clear diffuse, stroke invalide ignore', async () => {
+  const alice = await createClient('alice-chat');
+  const bob = await createClient('bob-chat');
+  const charlie = await createClient('charlie-chat');
+
+  try {
+    await consumeHandshakeMessages(alice);
+    await consumeHandshakeMessages(bob);
+    await consumeHandshakeMessages(charlie);
+
+    const roomName = `coverage-chat-${Date.now()}`;
+    const createdPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomName });
+    const roomListMsg = await createdPromise;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room);
+
+    const aliceJoinedPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room.id === room.id
+    );
+    const aliceStatePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: room.id });
+    await aliceJoinedPromise;
+    await aliceStatePromise;
+
+    const bobJoinedPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'room:joined' && msg.room.id === room.id
+    );
+    const bobStatePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(bob, { type: 'room:join', roomId: room.id });
+    await bobJoinedPromise;
+    await bobStatePromise;
+
+    const chatMessagePromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'chat:message' && msg.roomId === room.id && msg.text === 'bonjour'
+    );
+    sendJson(alice, { type: 'chat:send', text: 'bonjour' });
+    const chatMessage = await chatMessagePromise;
+    assert.equal(chatMessage.from, 'alice-chat');
+
+    // message chat vide: ne doit rien diffuser.
+    sendJson(alice, { type: 'chat:send', text: '   ' });
+    await expectNoJson(bob, (msg) => msg.type === 'chat:message' && msg.text.trim().length === 0);
+
+    // trait invalide: ne doit rien diffuser.
+    sendJson(alice, {
+      type: 'drawing:stroke',
+      strokeId: `bad-${Date.now()}`,
+      tool: 'pen',
+      size: 3,
+      x1: 2,
+      y1: 2,
+      x2: 3,
+      y2: 3
+    });
+    await expectNoJson(bob, (msg) => msg.type === 'drawing:stroke' && msg.roomId === room.id);
+
+    // clear diffusé aux membres de la salle.
+    const clearPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:clear' && msg.roomId === room.id && msg.by === 'alice-chat'
+    );
+    sendJson(alice, { type: 'drawing:clear' });
+    await clearPromise;
+
+    // nouveau join -> état vide après clear.
+    const charlieJoinedPromise = waitForJson(
+      charlie,
+      (msg) => msg.type === 'room:joined' && msg.room.id === room.id
+    );
+    const charlieStatePromise = waitForJson(
+      charlie,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(charlie, { type: 'room:join', roomId: room.id });
+    await charlieJoinedPromise;
+    const charlieState = await charlieStatePromise;
+    assert.equal(charlieState.strokes.length, 0);
+  } finally {
+    alice.close();
+    bob.close();
+    charlie.close();
+  }
+});
+
+test('coverage - switch de salle et client sans cookie', async () => {
+  const anonymous = await createAnonymousClient();
+  const alice = await createClient('alice-switch');
+  const bob = await createClient('bob-switch');
+
+  try {
+    // Sans cookie wsname, le serveur ne répond pas au protocole.
+    sendJson(anonymous, { type: 'room:list' });
+    await expectNoJson(anonymous, (msg) => msg.type === 'rooms:list', 400);
+
+    await consumeHandshakeMessages(alice);
+    await consumeHandshakeMessages(bob);
+
+    const roomAName = `switch-A-${Date.now()}`;
+    const roomBName = `switch-B-${Date.now()}`;
+
+    const roomACreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomAName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomAName });
+    const roomsAfterA = await roomACreated;
+    const roomA = roomsAfterA.rooms.find((r) => r.name === roomAName);
+    assert.ok(roomA);
+
+    const roomBCreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomBName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomBName });
+    const roomsAfterB = await roomBCreated;
+    const roomB = roomsAfterB.rooms.find((r) => r.name === roomBName);
+    assert.ok(roomB);
+
+    const aliceJoinARoomPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room.id === roomA.id
+    );
+    const aliceStateARoomPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === roomA.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: roomA.id });
+    await aliceJoinARoomPromise;
+    await aliceStateARoomPromise;
+
+    const bobJoinARoomPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'room:joined' && msg.room.id === roomA.id
+    );
+    const bobStateARoomPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === roomA.id
+    );
+    sendJson(bob, { type: 'room:join', roomId: roomA.id });
+    await bobJoinARoomPromise;
+    await bobStateARoomPromise;
+
+    const bobUsersAfterSwitchPromise = waitForJson(
+      bob,
+      (msg) => msg.type === 'users:list'
+        && msg.roomId === roomA.id
+        && Array.isArray(msg.users)
+        && msg.users.length === 1
+        && msg.users[0].name === 'bob-switch'
+    );
+
+    // Join roomB depuis roomA: couvre previousRoomId && previousRoomId !== roomId.
+    const aliceJoinBRoomPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room.id === roomB.id
+    );
+    const aliceStateBRoomPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === roomB.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: roomB.id });
+    await aliceJoinBRoomPromise;
+    await aliceStateBRoomPromise;
+    await bobUsersAfterSwitchPromise;
+
+    // leave quand déjà hors salle: pas d'erreur, pas de crash.
+    sendJson(alice, { type: 'room:leave' });
+    await wait(50);
+    sendJson(alice, { type: 'room:leave' });
+    await wait(50);
+  } finally {
+    anonymous.close();
+    alice.close();
+    bob.close();
+  }
+});
+
+test('coverage - applyState et clear sans salle ne plantent pas', async () => {
+  const alice = await createClient('alice-no-room-2');
+
+  try {
+    await consumeHandshakeMessages(alice);
+
+    sendJson(alice, { type: 'drawing:applyState', strokes: [] });
+    sendJson(alice, { type: 'drawing:clear' });
+
+    // Aucune erreur attendue dans ces cas: on vérifie seulement que la connexion reste vivante.
+    sendJson(alice, { type: 'room:list' });
+    const roomsList = await waitForJson(alice, (msg) => msg.type === 'rooms:list');
+    assert.ok(Array.isArray(roomsList.rooms));
+  } finally {
+    alice.close();
+  }
+});
+
+test('coverage - la liste des sauvegardes est plafonnee a 200', async () => {
+  const alice = await createClient('alice-cap-saves');
+
+  try {
+    await consumeHandshakeMessages(alice);
+
+    const roomName = `cap-saves-${Date.now()}`;
+    const roomCreated = waitForJson(
+      alice,
+      (msg) => msg.type === 'rooms:list' && msg.rooms.some((r) => r.name === roomName)
+    );
+    sendJson(alice, { type: 'room:create', name: roomName });
+    const roomListMsg = await roomCreated;
+    const room = roomListMsg.rooms.find((r) => r.name === roomName);
+    assert.ok(room);
+
+    const joinedPromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'room:joined' && msg.room.id === room.id
+    );
+    const statePromise = waitForJson(
+      alice,
+      (msg) => msg.type === 'drawing:state' && msg.roomId === room.id
+    );
+    sendJson(alice, { type: 'room:join', roomId: room.id });
+    await joinedPromise;
+    await statePromise;
+
+    for (let i = 0; i < 205; i += 1) {
+      sendJson(alice, { type: 'drawing:save', name: `cap-${i}` });
+    }
+
+    await wait(300);
+
+    const savedListPromise = waitForJson(alice, (msg) => msg.type === 'drawing:saved:list');
+    sendJson(alice, { type: 'drawing:saved:list' });
+    const savedList = await savedListPromise;
+    assert.ok(savedList.saves.length <= 200);
+    assert.ok(savedList.saves.length > 0);
   } finally {
     alice.close();
   }
