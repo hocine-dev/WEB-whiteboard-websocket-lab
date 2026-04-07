@@ -12,6 +12,7 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/*Crée un client WebSocket simulant un utilisateur avec un nom spécifique (via Cookie)*/
 function createClient(userName) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(WS_URL, {
@@ -36,7 +37,7 @@ function createClient(userName) {
     });
   });
 }
-
+/** Crée un client sans cookie pour tester les cas d'erreur de sécurité/anonymat */
 function createAnonymousClient() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(WS_URL);
@@ -57,7 +58,9 @@ function createAnonymousClient() {
     });
   });
 }
-
+/**
+ * Attend de recevoir un message JSON spécifique du serveur qui valide une condition (predicate)
+ */
 function waitForJson(ws, predicate, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -93,7 +96,7 @@ function sendJson(ws, payload) {
 function sendRaw(ws, text) {
   ws.send(text);
 }
-
+/** Vérifie qu'un message spécifique n'est pas reçu pendant un certain temps */
 function expectNoJson(ws, predicate, timeoutMs = 300) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -121,7 +124,8 @@ function expectNoJson(ws, predicate, timeoutMs = 300) {
     ws.on('message', onMessage);
   });
 }
-
+/** * Simule le comportement initial du client : demande la liste des salles et des sauvegardes
+ */
 async function consumeHandshakeMessages(ws) {
   sendJson(ws, { type: 'room:list' });
   sendJson(ws, { type: 'drawing:saved:list' });
@@ -162,6 +166,9 @@ async function consumeHandshakeMessages(ws) {
   });
 }
 
+// ============================================================================
+// CYCLE DE VIE DU SERVEUR DE TEST
+// ============================================================================
 before(async () => {
   serverModule = await import('./server.js');
   await serverModule.startServer({
@@ -187,6 +194,9 @@ after(async () => {
   await serverModule.stopServer();
 });
 
+// ============================================================================
+// TESTS DES FONCTIONNALITÉS (FEAT)
+// ============================================================================
 test('feat1 - creer un canvas puis le voir dans la liste', async () => {
   const alice = await createClient('alice');
   const bob = await createClient('bob');
@@ -703,6 +713,9 @@ test('feat5 - sauvegarder, restaurer puis supprimer une sauvegarde', async () =>
   }
 });
 
+// ============================================================================
+// TESTS DE COUVERTURE (CAS LIMITES ET ERREURS)
+// ============================================================================
 test('coverage - protocole: json invalide, type inconnu, room introuvable', async () => {
   const alice = await createClient('alice-errors');
 

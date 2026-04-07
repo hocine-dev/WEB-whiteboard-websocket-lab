@@ -46,6 +46,7 @@ type ConnectedUser = {
   color: string;
 };
 
+//-------------------Les message que le serveur peut envoyer au client-------------------//
 type ServerMessage =
   | { type: 'rooms:list'; rooms: RoomSummary[] }
   | { type: 'room:joined'; room: { id: string; name: string }; user: { name: string; color: string } }
@@ -60,6 +61,8 @@ type ServerMessage =
   | { type: 'drawing:stroke'; roomId: string; stroke: DrawStroke }
   | { type: 'drawing:clear'; roomId: string; by: string };
 
+
+//-------------------Variables d'état globales-------------------//
 let currentRoomId: string | null = null;
 let currentTool: DrawingTool = 'pen';
 let brushSize = 4;
@@ -77,6 +80,7 @@ let historyCursor = 0;
 
 const userName = wsname || 'Anonymous';
 
+//-------element html-------------------------------//
 const userNameInLobby = document.querySelector('#user-name') as HTMLElement | null;
 if (userNameInLobby) {
   userNameInLobby.textContent = userName;
@@ -120,6 +124,8 @@ const context = canvas ? canvas.getContext('2d') : null;
 const ws = new WebSocket('ws://localhost:1234');
 let saveStatusTimer: ReturnType<typeof setTimeout> | null = null;
 
+
+//------------------------crrer une couleur local-----------------------//
 function hashColor(seed: string): string {
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) {
@@ -128,12 +134,9 @@ function hashColor(seed: string): string {
   return `hsl(${hash}, 78%, 58%)`;
 }
 
-function sendJSON(payload: Record<string, unknown>): void {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-  }
-}
 
+
+//-------------------------Affichage du statut de sauvegarde-----------------------//
 function showSaveStatus(message: string, state: 'pending' | 'success' | 'error', autoHideMs = 2200): void {
   if (!saveStatus) {
     return;
@@ -156,7 +159,7 @@ function showSaveStatus(message: string, state: 'pending' | 'success' | 'error',
     }, autoHideMs);
   }
 }
-
+//-------------------------Gestion des outils de dessin-----------------------//
 function updateToolButtons(): void {
   if (toolPenButton) {
     toolPenButton.classList.toggle('active', currentTool === 'pen');
@@ -165,7 +168,7 @@ function updateToolButtons(): void {
     toolEraserButton.classList.toggle('active', currentTool === 'eraser');
   }
 }
-
+//--------------------------Gestion du canvas et des traits-----------------------//
 function clearCanvasVisual(): void {
   if (!canvas || !context) {
     return;
@@ -174,7 +177,7 @@ function clearCanvasVisual(): void {
   const rect = canvas.getBoundingClientRect();
   context.clearRect(0, 0, rect.width, rect.height);
 }
-
+//--------------------------Dessine un trait sur le canvas en fonction des données normalisées-----------------------//
 function drawStroke(stroke: DrawStroke): void {
   if (!canvas || !context) {
     return;
@@ -204,6 +207,8 @@ function drawStroke(stroke: DrawStroke): void {
   context.restore();
 }
 
+
+//--------------------------Redessine tout le canvas à partir de l'état actuel des traits de la salle-----------------------//
 function redrawCanvas(): void {
   clearCanvasVisual();
   for (const stroke of roomStrokes) {
@@ -211,6 +216,7 @@ function redrawCanvas(): void {
   }
 }
 
+//----------------Ajuste la taille du canvas pour qu'il soit net---------------------/
 function setupCanvasSize(): void {
   if (!canvas || !context) {
     return;
@@ -229,6 +235,7 @@ function setupCanvasSize(): void {
   redrawCanvas();
 }
 
+//----------Convertit la position de la souris en coordonnées normalisées (entre 0 et 1)------------------------//
 function pointerToNormalizedPoint(event: PointerEvent): { x: number; y: number } | null {
   if (!canvas) {
     return null;
@@ -248,11 +255,13 @@ function pointerToNormalizedPoint(event: PointerEvent): { x: number; y: number }
   };
 }
 
+//--------------------------Gère l'ajout d'un trait localement -----------------------//
 function pushLocalStroke(stroke: DrawStroke): void {
   roomStrokes.push(stroke);
   drawStroke(stroke);
 }
 
+//---------------------------dessine un aperçu de l'état du dessin correspondant à la position actuelle du curseur dans l'historique-----------------------//
 function drawHistoryPreview(): void {
   if (!context || !canvas) {
     return;
@@ -267,6 +276,7 @@ function drawHistoryPreview(): void {
   }
 }
 
+//--------------------------Construit une liste d'étapes d'historique à partir de la liste complète des traits, en regroupant les traits qui font partie du même "trait continu" (même strokeId)-----------------------//
 function buildHistorySteps(strokes: DrawStroke[]): DrawStroke[][] {
   const steps: DrawStroke[][] = [];
   let currentKey = '';
@@ -286,6 +296,7 @@ function buildHistorySteps(strokes: DrawStroke[]): DrawStroke[][] {
   return steps;
 }
 
+//---------------------------Met à jour l'état des contrôles de navigation dans l'historique en fonction de la position actuelle du curseur et du nombre total d'étapes-----------------------//
 function updateHistoryControls(): void {
   if (historyBackButton) {
     historyBackButton.disabled = historyCursor <= 0;
@@ -298,6 +309,7 @@ function updateHistoryControls(): void {
   }
 }
 
+//---------------------------show/hide des controles de navigation dans l'historique-----------------------//
 function setHistoryControlsVisible(visible: boolean): void {
   const controls = [historyBackButton, historyForwardButton, historyApplyButton, historyExitButton, historyStep];
   controls.forEach((element) => {
@@ -311,6 +323,8 @@ function setHistoryControlsVisible(visible: boolean): void {
   }
 }
 
+
+//--------------------------Entre en mode historique pour permettre à l'utilisateur de naviguer dans les étapes précédentes du dessin-----------------------//
 function enterHistoryMode(): void {
   if (isHistoryMode || !currentRoomId) {
     return;
@@ -324,7 +338,7 @@ function enterHistoryMode(): void {
   updateHistoryControls();
   drawHistoryPreview();
 }
-
+//--------------------------Quitte le mode historique et revient à l'affichage normal du canvas-----------------------//
 function exitHistoryMode(skipRedraw = false): void {
   if (!isHistoryMode) {
     return;
@@ -398,6 +412,8 @@ function moveDraw(event: PointerEvent): void {
   lastPoint = point;
 }
 
+
+//---------------------------Termine le dessin en cours et libère la capture du pointeur-----------------------//
 function endDraw(event: PointerEvent): void {
   if (!canvas) {
     return;
@@ -412,6 +428,7 @@ function endDraw(event: PointerEvent): void {
   currentStrokeId = null;
 }
 
+//---------------------------Réinitialise l'état du canvas et des traits pour la salle actuelle (utilisé lors de la connexion à une salle ou après un effacement)-----------------------//
 function resetCanvasStateForRoom(): void {
   roomStrokes = [];
   pendingStrokeEchoes.clear();
@@ -424,12 +441,15 @@ function resetCanvasStateForRoom(): void {
   redrawCanvas();
 }
 
+
+//----------------------------Efface les messages du chat-----------------------//
 function clearMessages(): void {
   if (messagesList) {
     messagesList.innerHTML = '';
   }
 }
 
+//----------------------------Ajoute un message au chat de la salle actuelle-----------------------//
 function addMessageToChat(from: string, text: string): void {
   if (!messagesList) {
     return;
@@ -440,7 +460,7 @@ function addMessageToChat(from: string, text: string): void {
   messagesList.appendChild(line);
   messagesList.scrollTop = messagesList.scrollHeight;
 }
-
+//----------------------------Affiche la liste des utilisateurs connectés à la salle actuelle-----------------------//
 function renderConnectedUsers(users: ConnectedUser[]): void {
   if (!connectedUsersList) {
     return;
@@ -463,7 +483,7 @@ function renderConnectedUsers(users: ConnectedUser[]): void {
     connectedUsersList.appendChild(item);
   }
 }
-
+//----------------------------Affiche l'écran de lobby et masque le canvas, réinitialise les états liés à la salle et au dessin-----------------------//
 function showLobby(): void {
   if (lobbyScreen) {
     lobbyScreen.classList.remove('hidden');
@@ -504,7 +524,7 @@ function showCanvas(roomId: string, roomName: string): void {
     setupCanvasSize();
   });
 }
-
+//----------------------------Affiche la liste des salles disponibles dans le lobby-----------------------//
 function renderRooms(rooms: RoomSummary[]): void {
   if (!roomList) {
     return;
@@ -538,7 +558,7 @@ function renderRooms(rooms: RoomSummary[]): void {
     roomList.appendChild(item);
   }
 }
-
+//----------------------------Affiche la liste des dessins sauvegardés disponibles pour restauration dans le canvas-----------------------//
 function renderSavedDrawings(saves: SavedDrawingSummary[]): void {
   if (!savedDrawingsList) {
     return;
@@ -595,12 +615,27 @@ function renderSavedDrawings(saves: SavedDrawingSummary[]): void {
   }
 }
 
+
+
+//--------COMMUNICATION WEBSOCKET------------------------------------------------------
+
+//------------------------Envoi de messages au serveur-----------------------//
+function sendJSON(payload: Record<string, unknown>): void {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  }
+}
+
+
+
+
+
 ws.onopen = (event: Event) => {
   console.log('WebSocket connection opened:', event);
   sendJSON({ type: 'room:list' });
   sendJSON({ type: 'drawing:saved:list' });
 };
-
+//---router cote client---------------
 ws.onmessage = (event: MessageEvent) => {
   const raw = String(event.data);
 
@@ -659,7 +694,7 @@ ws.onmessage = (event: MessageEvent) => {
       return;
     }
 
-    if (data.type === 'drawing:state') {
+    if (data.type === 'drawing:state') {  // Réception de l'historique complet à la connexion
       if (!currentRoomId || data.roomId !== currentRoomId) {
         return;
       }
@@ -671,7 +706,7 @@ ws.onmessage = (event: MessageEvent) => {
       return;
     }
 
-    if (data.type === 'drawing:stroke') {
+    if (data.type === 'drawing:stroke') {   // Réception d'un trait tracé par quelqu'un d'autre
       if (!currentRoomId || data.roomId !== currentRoomId) {
         return;
       }

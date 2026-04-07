@@ -181,6 +181,7 @@ body {
   cursor: pointer;
   transition: all 0.15s;
 }
+
 .join-btn:hover {
   background: var(--accent);
   color: #fff;
@@ -456,4 +457,18 @@ body {
 }
 #chat-input:focus {
   border-color: var(--accent);
+}
+
+
+#btn-envoyer{
+ 
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 5px 13px;
+  font-size: 0.82rem;
+  font-family: var(--sans);
+  cursor: pointer;
+  transition: all 0.15s;
 }

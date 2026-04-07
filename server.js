@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 
-/* node:coverage disable */
 
+//------------------Configuration du serveur-------------------//
 const defaultPort = Number(process.env.WS_PORT || 1234);
 const defaultHost = process.env.WS_HOST || '0.0.0.0';
 
-// Crée un serveur HTTP bas niveau (TCP, sockets, handshake HTTP, etc.).
+// Crée un serveur HTTP bas niveau 
 const server = http.createServer();
 
 // Place un serveur WebSocket au-dessus du serveur HTTP.
@@ -18,6 +18,8 @@ const wss = new WebSocketServer({
 
 const STORE_FILE = new URL('./drawings-store.json', import.meta.url);
 
+
+//L'objet en mémoire qui va toutes les sauvegardes chargées depuis le fichier.
 const persistentStore = {
   saves: []
 };
@@ -25,10 +27,24 @@ const persistentStore = {
 let storeLoaded = false;
 let serverStarted = false;
 
-// Les salles sont stockées en mémoire tant que le serveur tourne.
-// Chaque salle garde la liste des clients connectés pour compter les participants.
+//----Création des salles
 const rooms = new Map();
 
+
+
+
+
+//------------------Fontions Utilitaires-----------------------------------------//
+
+
+
+
+/**
+ * Génère une couleur unique (format HSL) basée sur le nom de l'utilisateur.
+ * @param {string} name - Le nom de l'utilisateur.
+ * @returns {string} La couleur générée au format `hsl(h, s, l)`.
+ */
+//---------------------------------------------------------------------------------------------------------//
 function computeUserColor(name) {
   let hash = 0;
   for (let i = 0; i < name.length; i += 1) {
@@ -38,6 +54,13 @@ function computeUserColor(name) {
   return `hsl(${hash}, 78%, 58%)`;
 }
 
+
+/**
+ * Charge les sauvegardes depuis le fichier JSON  vers la mémoire.
+ * Si le fichier n'existe pas, initialise un tableau vide.
+ * @returns {void}
+ */
+//---------------------------------------------------------------------------------------------------------//
 function loadPersistentStore() {
   try {
     /* node:coverage ignore next */
@@ -68,6 +91,15 @@ function writePersistentStore() {
   fs.writeFileSync(STORE_FILE, JSON.stringify(persistentStore, null, 2), 'utf8');
 }
 
+
+
+//-------------Logique de gestion des salles, des utilisateurs et des dessins-----------------//
+
+/**
+ * Crée une nouvelle salle et l'ajoute au Map `rooms`.
+ * @param {string} name - Le nom souhaité pour la nouvelle salle.
+ * @returns {Object} L'objet complet représentant la salle créée.*/
+//---------------------------------------------------------------------------------------------------------//
 function createRoom(name) {
   const id = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const room = {
@@ -81,6 +113,12 @@ function createRoom(name) {
   return room;
 }
 
+/**
+ * Calcule un nom de salle unique lors de la restauration d'une sauvegarde pour éviter les doublons.
+ * Ajoute ou incrémente un suffixe numérique .
+ * @param {string} baseName - Le nom de base du dessin à restaurer.
+ * @returns {string} Le nouveau nom unique de la salle.*/
+//---------------------------------------------------------------------------------------------------------//
 function createRestoredRoomName(baseName) {
   const cleanBaseName = String(baseName || 'Dessin').trim() || 'Dessin';
   const escapedName = cleanBaseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -105,6 +143,14 @@ function createRestoredRoomName(baseName) {
   return `${cleanBaseName}${maxSuffix + 1}`;
 }
 
+
+
+
+/**
+ * Prépare la liste des salles actives pour l'envoi aux clients.
+ * @returns {Array<{id: string, name: string, userCount: number}>} La liste formatée et triée par date.*/
+//---------------------------------------------------------------------------------------------------------//
+
 function serializeRooms() {
   return Array.from(rooms.values())
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -114,6 +160,12 @@ function serializeRooms() {
       userCount: room.users.size
     }));
 }
+
+/**
+ * Prépare la liste des sauvegardes persistantes pour l'envoi aux clients.
+ * @returns {Array<Object>} La liste des sauvegardes formatée et triée.
+ */
+//---------------------------------------------------------------------------------------------------------//
 
 function serializeSavedDrawings() {
   return persistentStore.saves
@@ -126,6 +178,12 @@ function serializeSavedDrawings() {
       strokeCount: save.strokes.length
     }));
 }
+/**
+ * Prépare la liste des utilisateurs présents dans une salle.
+ * @param {Object} room - L'objet salle concerné.
+ * @returns {Array<{name: string, color: string}>} La liste des utilisateurs formatée.
+ */
+//---------------------------------------------------------------------------------------------------------//
 
 function serializeUsers(room) {
   /* node:coverage ignore next */
@@ -141,11 +199,23 @@ function serializeUsers(room) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+
+/**
+ * Convertit un objet en chaîne JSON et l'envoie à un client si sa connexion est ouverte.
+ * @param {WebSocket} client - Le client destinataire.
+ * @param {Object} payload - Les données à envoyer.
+ * @returns {void}
+ */
 function sendJSON(client, payload) {
   if (client.readyState === WebSocket.OPEN) {
     client.send(JSON.stringify(payload));
   }
 }
+
+/**
+ * Diffuse la liste à jour des salles à tous les clients connectés au serveur.
+ * @returns {void}
+ */
 
 function broadcastRooms() {
   const payload = {
@@ -157,6 +227,11 @@ function broadcastRooms() {
   });
 }
 
+/**
+ * Diffuse la liste à jour des sauvegardes à TOUS les clients connectés au serveur.
+ * @returns {void}
+ */
+
 function broadcastSavedDrawingsList() {
   const payload = {
     type: 'drawing:saved:list',
@@ -167,6 +242,14 @@ function broadcastSavedDrawingsList() {
     sendJSON(client, payload);
   });
 }
+
+
+/**
+ * Diffuse un message de chat uniquement aux membres d'une salle spécifique.
+ * @param {string} roomId - L'identifiant de la salle.
+ * @param {Object} payload - Le message de chat à envoyer.
+ * @returns {void}
+ */
 
 function broadcastChatToRoom(roomId, payload) {
   const room = rooms.get(roomId);
@@ -180,6 +263,12 @@ function broadcastChatToRoom(roomId, payload) {
   });
 }
 
+/**
+ * Diffuse un événement de dessin aux membres d'une salle spécifique.
+ * @param {string} roomId - L'identifiant de la salle.
+ * @param {Object} payload - L'objet représentant le trait de dessin ou l'état.
+ * @returns {void}
+ */
 function broadcastDrawingToRoom(roomId, payload) {
   const room = rooms.get(roomId);
   /* node:coverage ignore next */
@@ -191,6 +280,12 @@ function broadcastDrawingToRoom(roomId, payload) {
     sendJSON(member, payload);
   });
 }
+
+/**
+ * Diffuse la liste mise à jour des utilisateurs présents dans une salle spécifique.
+ * @param {string} roomId - L'identifiant de la salle.
+ * @returns {void}
+ */
 
 function broadcastUsersToRoom(roomId) {
   const room = rooms.get(roomId);
@@ -209,6 +304,16 @@ function broadcastUsersToRoom(roomId) {
     sendJSON(member, payload);
   });
 }
+
+
+//Securite et nettoyage de donnes
+
+/**
+ * Nettoie et valide un trait de dessin reçu d'un client. 
+ * Rejette le trait si les coordonnées sont invalides.
+ * @param {Object} rawStroke - Les données brutes du trait envoyées par le client.
+ * @returns {Object|null} L'objet trait validé, ou null si les données sont corrompues.
+ */
 
 function sanitizeStrokePayload(rawStroke) {
   const stroke = {
@@ -232,11 +337,30 @@ function sanitizeStrokePayload(rawStroke) {
   return stroke;
 }
 
+
+/**
+ * Applique le nettoyage sur une liste complète de traits (utilisé lors des chargements de sauvegardes).
+ * @param {Array<Object>} rawList - La liste brute de traits.
+ * @returns {Array<Object>} La liste contenant uniquement les traits validés.
+ */
+
+
 function sanitizeStrokeList(rawList) {
   return rawList
     .map((stroke) => sanitizeStrokePayload(stroke))
     .filter((stroke) => stroke !== null);
 }
+
+
+
+//--Deconnexion-------------------
+
+
+/**
+ * Retire un client de sa salle actuelle et met à jour son état.
+ * @param {WebSocket} client - Le client à retirer de sa salle.
+ * @returns {string|null} L'ID de l'ancienne salle, ou null si le client n'était dans aucune salle.
+ */
 
 function removeClientFromRoom(client) {
   if (!client.currentRoomId) {
@@ -254,6 +378,7 @@ function removeClientFromRoom(client) {
   return previousRoomId;
 }
 
+//------------------------Gestion de connexion et routage --------------------------------/
 
 // Écoute les nouvelles connexions WebSocket.
 wss.on('connection', function(client, request) {
@@ -600,6 +725,12 @@ wss.on('connection', function(client, request) {
   }
 });
 
+
+/**
+ * Démarre le serveur WebSocket et charge l'historique persistant.
+ * @param {Object} options - Options de démarrage .
+ * @returns {Promise<http.Server>} Promesse résolue une fois le serveur démarré.
+ */
 export function startServer(options = {}) {
   const port = Number(options.port || defaultPort);
   const host = String(options.host || defaultHost);
@@ -632,6 +763,12 @@ export function startServer(options = {}) {
     server.listen(port, host);
   });
 }
+
+
+/**
+ * Arrête le serveur et ferme toutes les connexions clientes proprement.
+ * @returns {Promise<void>} Promesse résolue une fois l'arrêt complet.
+ */
 
 export function stopServer() {
   if (!serverStarted) {
